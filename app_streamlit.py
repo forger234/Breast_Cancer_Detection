@@ -1,6 +1,4 @@
-# from petct_module import predict_petct
-from petct_inference import predict_petct
-
+from petct.petct_inference import predict_petct
 import os
 import cv2
 import torch
@@ -15,16 +13,20 @@ import nibabel as nib
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import google.generativeai as genai
+genai.configure(api_key="AIzaSyDnH-3Z6-_9kVrQZ6caAcXp-4oxBcgHEHM")
 from streamlit_lottie import st_lottie
 import json
 import time
 import base64
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from reportlab.platypus import Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
 from io import BytesIO
 from datetime import datetime
 
-from doctor_auth import doctor_login
+from auth.doctor_auth import doctor_login
 
 IMAGE_SIZE = 256
 CLASS_NAMES = ["normal", "benign", "malignant"]
@@ -32,7 +34,7 @@ MODEL_PATH = "breast_cancer_resnet18.pth"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ================= PAGE CONFIG & CUSTOM THEME =================
 st.set_page_config(
-    page_title="Breast Cancer Detection – BUS-UCLM",
+    page_title="MammoSafe - Breast Cancer Detection",
     page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -131,6 +133,35 @@ div[data-testid="stRadio"] [role="radiogroup"] label input:checked ~ div svg {
     fill: #22c55e !important;
 }
 
+/* ===== Metric Sizes ===== */
+[data-testid="stMetricValue"] > div {
+    font-size: 1.5rem !important; /* Smaller Value */
+}
+[data-testid="stMetricLabel"] > div > div > p {
+    font-size: 0.9rem !important; /* Smaller Label */
+}
+
+/* ===== Alert Text Color (st.info, st.error, etc) ===== */
+div[data-testid="stAlert"] p, 
+div[data-testid="stAlert"] div {
+    color: #ffffff !important;
+}
+
+/* ===== Patient History Box (Expanders & DataFrames) ===== */
+div[data-testid="stExpander"] details summary p {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+}
+div[data-testid="stExpanderDetails"] {
+    color: #ffffff !important;
+}
+/* Force DataFrame and Table cells to white */
+div[data-testid="stDataFrame"] div, 
+div[data-testid="stDataFrame"] th, 
+div[data-testid="stDataFrame"] td,
+div[data-testid="stDataFrame"] span {
+    color: #ffffff !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -138,14 +169,6 @@ div[data-testid="stRadio"] [role="radiogroup"] label input:checked ~ div svg {
 
 with st.sidebar:
     st.markdown(f"👨‍⚕️ Logged in as: **{st.session_state.doctor_name}**")
-
-    st.markdown("### 🎯 Dashboard Controls")
-
-    with st.expander("⚙️ System Status", expanded=True):
-        st.markdown(f"**Device:** {'GPU 🚀' if torch.cuda.is_available() else 'CPU ⚡'}")
-        st.markdown(f"**Model:** ResNet18")
-        st.markdown(f"**Input Size:** {IMAGE_SIZE}×{IMAGE_SIZE}")
-        st.progress(100, text="System Ready")
 
     st.markdown("---")
 
@@ -160,12 +183,8 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### 📊 Dataset Info")
-    st.markdown("**BUS-UCLM Dataset**")
-    st.markdown("• Breast Ultrasound Images")
-    st.markdown("• Three-class classification")
 
-    st.markdown("---")
+   
 
     # ✅ Logout placed directly under dataset info
     if st.button(" Logout", use_container_width=True):
@@ -621,7 +640,6 @@ def fuse_pet_ct(ct_img, pet_img):
 
 DATA_ROOT = "data"
 IMAGE_DIR = os.path.join(DATA_ROOT, "images")
-MASK_DIR = os.path.join(DATA_ROOT, "masks")
 
 
 
@@ -704,7 +722,12 @@ def generate_patient_report(
     prediction,
     confidence,
     stage,
-    probs
+    probs,
+    us_pred=None,
+    us_conf=None,
+    histo_pred=None,
+    histo_conf=None,
+    doctor_notes=""
 ):
 
     buffer = BytesIO()
@@ -742,7 +765,9 @@ def generate_patient_report(
     y -= 18
     c.drawString(margin_x, y, f"Confidence Score: {confidence:.2f}%")
     y -= 18
-    c.drawString(margin_x, y, f"Predicted Stage: {stage}")
+    # Make predicted stage standalone and bold to emphasize "stage 1", "stage 2"
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin_x, y, f"Cancer Stage: {stage}")
     y -= 30
 
     # ===== CLASS PROBABILITIES =====
@@ -756,40 +781,53 @@ def generate_patient_report(
         y -= 16
 
     y -= 20
+    
+    # ===== INDIVIDUAL MODALITIES =====
+    if us_pred and histo_pred:
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(margin_x, y, "Individual Modality Predictions:")
+        y -= 18
+        
+        c.setFont("Helvetica", 11)
+        c.drawString(margin_x + 20, y, f"Ultrasound: {us_pred.upper()} ({us_conf:.2f}%)")
+        y -= 16
+        c.drawString(margin_x + 20, y, f"Histopathology: {histo_pred.upper()} ({histo_conf:.2f}%)")
+        y -= 20
+
     c.line(margin_x, y, width - margin_x, y)
     y -= 30
 
-    # ===== AI INTERPRETATION =====
-    ultrasound_text, ai_text, followup_text = get_ai_interpretation_text(
-        prediction.lower(), confidence
-    )
-
+    # ===== IMPRESSION =====
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(margin_x, y, "AI Explanation")
+    c.drawString(margin_x, y, "Impression:")
     y -= 20
+    
+    impression_text = (
+        f"Based on the combined analysis of Ultrasound and Histopathology modalities, "
+        f"the patient presents with a finding consistent with <font name='Helvetica-Bold'>{prediction.upper()}</font> pathology, "
+        f"indicative of <font name='Helvetica-Bold'>{stage}</font>."
+    )
+    
+    styles = getSampleStyleSheet()
+    style = styles["Normal"]
+    style.fontName = "Helvetica"
+    style.fontSize = 11
+    style.leading = 14
+    
+    p = Paragraph(impression_text, style)
+    w, h = p.wrap(max_width, height)
+    p.drawOn(c, margin_x, y - h)
+    y -= (h + 20)
 
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(margin_x, y, "Ultrasound Image Properties:")
-    y -= 16
-
-    c.setFont("Helvetica", 11)
-    y = draw_multiline_text(c, ultrasound_text, margin_x + 10, y, max_width - 10)
-    y -= 20
-
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(margin_x, y, "AI Explanation:")
-    y -= 16
-
-    c.setFont("Helvetica", 11)
-    y = draw_multiline_text(c, ai_text, margin_x + 10, y, max_width - 10)
-    y -= 20
-
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(margin_x, y, "Follow-up Recommendation:")
-    y -= 16
-
-    c.setFont("Helvetica", 11)
-    y = draw_multiline_text(c, followup_text, margin_x + 10, y, max_width - 10)
+    # ===== DOCTOR's NOTES / COMMENTS =====
+    if doctor_notes and doctor_notes.strip():
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(margin_x, y, "Doctor's Notes & Recommendations")
+        y -= 20
+        
+        c.setFont("Helvetica", 11)
+        y = draw_multiline_text(c, doctor_notes.strip(), margin_x, y, max_width)
+        y -= 20
 
     # ===== FOOTER =====
     c.setFont("Helvetica-Oblique", 9)
@@ -823,135 +861,6 @@ def load_model():
     model.to(DEVICE)
     model.eval()
     return model
-
-# ================= SEGMENTATION MODEL (U-NET) =================
-
-class UNetSmall(nn.Module):
-    def __init__(self, in_channels=1, out_channels=1):
-        super().__init__()
-        self.down1 = DoubleConv(in_channels, 32)
-        self.pool1 = nn.MaxPool2d(2)
-        self.down2 = DoubleConv(32, 64)
-        self.pool2 = nn.MaxPool2d(2)
-        self.down3 = DoubleConv(64, 128)
-        self.pool3 = nn.MaxPool2d(2)
-
-        self.bottleneck = DoubleConv(128, 256)
-
-        self.up3 = nn.ConvTranspose2d(256, 128, 2, stride=2)
-        self.conv3 = DoubleConv(256, 128)
-        self.up2 = nn.ConvTranspose2d(128, 64, 2, stride=2)
-        self.conv2 = DoubleConv(128, 64)
-        self.up1 = nn.ConvTranspose2d(64, 32, 2, stride=2)
-        self.conv1 = DoubleConv(64, 32)
-
-        self.out_conv = nn.Conv2d(32, out_channels, 1)
-
-    def forward(self, x):
-        c1 = self.down1(x)
-        p1 = self.pool1(c1)
-        c2 = self.down2(p1)
-        p2 = self.pool2(c2)
-        c3 = self.down3(p2)
-        p3 = self.pool3(c3)
-
-        bn = self.bottleneck(p3)
-
-        u3 = self.up3(bn)
-        u3 = torch.cat([u3, c3], dim=1)
-        c3 = self.conv3(u3)
-
-        u2 = self.up2(c3)
-        u2 = torch.cat([u2, c2], dim=1)
-        c2 = self.conv2(u2)
-
-        u1 = self.up1(c2)
-        u1 = torch.cat([u1, c1], dim=1)
-        c1 = self.conv1(u1)
-
-        out = self.out_conv(c1)
-        return out
-
-class DoubleConv(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-@st.cache_resource
-def load_seg_model():
-    model = UNetSmall(in_channels=1, out_channels=1).to(DEVICE)
-    state_dict = torch.load("breast_seg_unet.pth", map_location=DEVICE)
-    model.load_state_dict(state_dict)
-    model.eval()
-    return model
-
-def predict_segmentation_mask(pil_img, seg_model):
-    """
-    Input: PIL image (RGB)
-    Output:
-      - mask_rgb: GREEN mask on black background
-      - overlay_rgb: original image with colored heatmap on lesion region
-    """
-    # 1) convert to grayscale for segmentation model
-    gray = pil_img.convert("L")
-    orig_w, orig_h = gray.size
-
-    # 2) resize to training size
-    gray_resized = gray.resize((IMAGE_SIZE, IMAGE_SIZE))
-    gray_np = np.array(gray_resized)  # [H, W]
-    gray_tensor = torch.from_numpy(gray_np).float() / 255.0
-    gray_tensor = gray_tensor.unsqueeze(0).unsqueeze(0).to(DEVICE)  # [1, 1, H, W]
-
-    # 3) forward pass through U-Net
-    with torch.no_grad():
-        logits = seg_model(gray_tensor)         # [1, 1, H, W]
-        probs = torch.sigmoid(logits)[0, 0]     # [H, W] in [0,1]
-
-    # 4) resize probabilities to original size
-    prob_small = probs.cpu().numpy()
-    prob_big = cv2.resize(prob_small, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
-
-    # 5) binary mask with softer threshold
-    th = 0.30                      # was 0.50 – this is easier
-    mask_bin = (prob_big > th).astype(np.uint8)
-
-    #    if still completely empty, fallback to top 3% highest pixels
-    if mask_bin.sum() == 0:
-        flat = prob_big.flatten()
-        k = max(1, int(0.03 * flat.size))       # top 3% pixels
-        kth_val = np.partition(flat, -k)[-k]
-        mask_bin = (prob_big >= kth_val).astype(np.uint8)
-
-    # 6) create a GREEN binary mask image (for "Mask" view)
-    mask_rgb = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
-    mask_rgb[:, :, 1] = mask_bin * 255          # green channel
-
-    # 7) create a heatmap-style overlay on original
-    rgb = np.array(pil_img.convert("RGB"))
-
-    # normalize probs for colormap so we always see something
-    prob_norm = (prob_big - prob_big.min()) / (prob_big.max() - prob_big.min() + 1e-8)
-    prob_uint8 = (prob_norm * 255).astype(np.uint8)
-
-    heatmap_bgr = cv2.applyColorMap(prob_uint8, cv2.COLORMAP_JET)
-    heatmap_rgb = cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2RGB)
-
-    # apply heatmap only where mask=1
-    heatmap_masked = heatmap_rgb * mask_bin[:, :, None]
-    overlay_rgb = np.uint8(0.6 * rgb + 0.4 * heatmap_masked)
-
-    return mask_rgb, overlay_rgb
-
 
 # ================= GRAD-CAM CORE =================
 
@@ -1019,8 +928,7 @@ st.markdown(
     <div class="banner-section">
         <div class="banner-title">MammoSafe</div>
         <div class="banner-subtitle">
-            Advanced AI-powered diagnostic assistance using deep learning and Grad-CAM visualization 
-            for interpretable breast ultrasound image analysis
+            Advanced AI-powered diagnostic platform integrating Ultrasound, Histopathology, and PET/CT analysis for comprehensive breast cancer detection.
         </div>
     </div>
     """,
@@ -1100,13 +1008,15 @@ st.markdown("""
 
 active_tab = st.radio(
     "Select Scan Modality",
-    ["Ultrasound", "PET / CT", "Histopathology"],
+    ["Ultrasound", "PET / CT", "Histopathology", "Patient Data"],
     horizontal=True,
     label_visibility="collapsed"
 )
 
 uploaded = None
 uploaded_files = None
+uploaded_us = None
+uploaded_histo = None
 
 if active_tab == "Ultrasound":
     st.markdown("### 📤 Upload Ultrasound Scan")
@@ -1131,147 +1041,268 @@ elif active_tab == "PET / CT":
 
 elif active_tab == "Histopathology":
     st.markdown("### 🔬 Histopathology Scan")
-    st.info("💡 Histopathology scan analysis is currently under development. Please check back later.")
+    uploaded = st.file_uploader(
+        "Upload Histopathology Image",
+        type=["png", "jpg", "jpeg"],
+        key=f"histo_{st.session_state.uploader_key}"
+    )
+    if uploaded:
+        st.success(f"Uploaded: {uploaded.name}")
+
+elif active_tab == "Patient Data":
+    st.markdown("### 📊 Patient Data Uploading Purpose")
+    
+    uploaded_folder_files = st.file_uploader(
+        "Upload Patient Folder",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        key=f"patient_folder_{st.session_state.uploader_key}"
+    )
+    
+    if uploaded_folder_files and len(uploaded_folder_files) >= 2:
+        st.success(f"Selected {len(uploaded_folder_files)} files.")
+        
+        # Sort so they're in a consistent order
+        uploaded_folder_files = sorted(uploaded_folder_files, key=lambda x: x.name)
+        
+        # Determine default index based on filename
+        us_index = 0
+        histo_index = 1 if len(uploaded_folder_files) > 1 else 0
+        
+        for i, f in enumerate(uploaded_folder_files):
+            if "us" in f.name.lower():
+                us_index = i
+            elif "histo" in f.name.lower():
+                histo_index = i
+                
+        col1, col2 = st.columns(2)
+        with col1:
+            uploaded_us = st.selectbox(
+                "", 
+                uploaded_folder_files, 
+                format_func=lambda x: x.name, 
+                index=us_index
+            )
+        with col2:
+            uploaded_histo = st.selectbox(
+                "", 
+                uploaded_folder_files, 
+                format_func=lambda x: x.name, 
+                index=histo_index
+            )
+    elif uploaded_folder_files:
+        st.warning("Please select at least 2 images.")
 
 scan_type = active_tab
 
-
-
 # ================= PROCESSING =================
 
-if (scan_type == "Ultrasound" and uploaded is not None) or \
-   (scan_type == "PET / CT" and uploaded_files):
+if (scan_type in ["Ultrasound", "Histopathology"] and uploaded is not None) or \
+   (scan_type == "PET / CT" and uploaded_files) or \
+   (scan_type == "Patient Data" and uploaded_folder_files and len(uploaded_folder_files) >= 2):
 
     with st.spinner("🔄 Processing scan..."):
 
         # ---------- ULTRASOUND ----------
         if scan_type == "Ultrasound":
             pil_img = Image.open(uploaded).convert("RGB")
+            # Validation: Ultrasound should be mostly grayscale
+            img_arr = np.array(pil_img).astype(float)
+            r, g, b = img_arr[:,:,0], img_arr[:,:,1], img_arr[:,:,2]
+            color_diff = np.mean(np.abs(r - g)) + np.mean(np.abs(r - b)) + np.mean(np.abs(g - b))
+            if color_diff > 50: # Significant color variance (>50) means it's likely Histopathology
+                st.error("⚠️ Invalid image format. Please upload an Ultrasound image.")
+                st.stop()
+                
             model = load_model()
             overlay_np, pred_name, probs = get_gradcam_overlay(pil_img, model)
+
+        # ---------- HISTOPATHOLOGY ----------
+        elif scan_type == "Histopathology":
+            from histopathology.histopathology_module import predict_histopathology
+            pil_img = Image.open(uploaded).convert("RGB")
+            # Validation: Histopathology should be colored (H&E stain)
+            img_arr = np.array(pil_img).astype(float)
+            r, g, b = img_arr[:,:,0], img_arr[:,:,1], img_arr[:,:,2]
+            color_diff = np.mean(np.abs(r - g)) + np.mean(np.abs(r - b)) + np.mean(np.abs(g - b))
+            if color_diff < 50: # Low color variance (<50) means it's likely Ultrasound/grayscale
+                st.error("⚠️ Invalid image format.Please upload a Histopathology image.")
+                st.stop()
+                
+            pred_name, confidence, probs_list = predict_histopathology(pil_img)
+            # Reorder probs to match CLASS_NAMES ["normal", "benign", "malignant"]
+            probs = np.zeros(3)
+            probs[0] = probs_list[2] # Normal
+            probs[1] = probs_list[0] # Benign
+            probs[2] = probs_list[1] # Malignant
 
         # ---------- PET / CT ----------
         elif scan_type == "PET / CT":
             try:
                 result = predict_petct(uploaded_files)
 
-                tab1, tab2 = st.tabs(["📝 Assessment & Visuals", "📊 Histogram"])
-
-                with tab1:
-                    st.markdown('<div class="section-header">🧠 PET / CT Clinical Assessment</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-header">🧠 PET / CT Clinical Assessment</div>', unsafe_allow_html=True)
 
                     # Top Row: Stage & Summary vs Metrics
-                    top_col1, top_col2 = st.columns([1.5, 1])
-                    
-                    with top_col1:
-                        st.markdown(
-                            f"""
-                            <div class="glass-card" style="height: 100%;">
-                                <h3 style="color: #60a5fa; margin-top:0;">🩺 Estimated Stage</h3>
-                                <div class="status-badge malignant" style="font-size: 1.5rem; padding: 10px 20px; display:inline-block; margin-bottom: 20px;">
-                                    {result['stage']}
-                                </div>
-                                <h4 style="color: #cbd5e1;">📋 Clinical Summary</h4>
-                                <p style="color: #e2e8f0; line-height: 1.6;">{result['clinical_summary']}</p>
-                            </div>
-                            """, 
-                            unsafe_allow_html=True
-                        )
-
-                    with top_col2:
-                        st.markdown(
-                            """
-                            <div class="glass-card" style="height: 100%;">
-                                <h3 style="color: #34d399; margin-top:0;">📊 Metabolic Metrics</h3>
-                            """, 
-                            unsafe_allow_html=True
-                        )
-                        metrics = result["metrics"]
-                        for k, v in metrics.items():
-                            st.metric(k, f"{v:.2f}")
-                        st.markdown("</div>", unsafe_allow_html=True)
-                        
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    st.markdown('<div class="section-header">Visual Interpretation</div>', unsafe_allow_html=True)
-                    
-                    # Images Row
-                    c1, c2, c3 = st.columns(3)
-
-                    with c1:
-                        st.markdown('<div class="image-container">', unsafe_allow_html=True)
-                        st.image(
-                            result["images"]["CT Slice (Anatomical)"],
-                            caption="CT Slice (Anatomical)",
-                            use_container_width=True
-                        )
-                        st.markdown('</div>', unsafe_allow_html=True)
-
-                    with c2:
-                        st.markdown('<div class="image-container">', unsafe_allow_html=True)
-                        st.image(
-                            result["images"]["PET Slice (Metabolic)"],
-                            caption="PET Slice (Metabolic)",
-                            use_container_width=True
-                        )
-                        st.markdown('</div>', unsafe_allow_html=True)
-
-                    with c3:
-                        st.markdown('<div class="image-container">', unsafe_allow_html=True)
-                        st.image(
-                            result["images"]["PET + CT Fusion"],
-                            caption="PET + CT Fusion",
-                            use_container_width=True
-                        )
-                        st.markdown('</div>', unsafe_allow_html=True)
-                        
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    
-                    # Doctor interpretation explanation
+                top_col1, top_col2 = st.columns([1.5, 1])
+                
+                with top_col1:
                     st.markdown(
-                        """
-                        <div class="glass-card">
-                            <h4 style="color: #fbbf24; margin-top:0;">👨‍⚕️ Interpretation Guide</h4>
-                            <div style="display: flex; gap: 20px; color: #cbd5e1;">
-                                <div style="flex: 1;"><strong>• PET:</strong> Highlights metabolic activity (FDG uptake)</div>
-                                <div style="flex: 1;"><strong>• CT:</strong> Shows physical anatomical structure</div>
-                                <div style="flex: 1;"><strong>• Fusion:</strong> Correlates hotspots with anatomy</div>
-                                <div style="flex: 1;"><strong>• Stage:</strong> Inferred from uptake intensity & spread</div>
+                        f"""
+                        <div class="glass-card" style="height: 100%;">
+                            <h3 style="color: #60a5fa; margin-top:0;">🩺 Estimated Stage</h3>
+                            <div class="status-badge malignant" style="font-size: 1.5rem; padding: 10px 20px; display:inline-block; margin-bottom: 20px;">
+                                {result['stage']}
                             </div>
+                            <h4 style="color: #cbd5e1;">📋 Clinical Summary</h4>
+                            <p style="color: #e2e8f0; line-height: 1.6;">{result['clinical_summary']}</p>
                         </div>
                         """, 
                         unsafe_allow_html=True
                     )
 
-                with tab2:
-                    st.markdown("### 📊 Image Intensity Histogram")
-                    st.write("Distribution of pixel intensities from the primary CT slice.")
-                    
-                    # Convert the CT slice image to numpy array for histogram
-                    ct_image = np.array(result["images"]["CT Slice (Anatomical)"])
-                    
-                    # If it's a 3D array (RGB), convert to grayscale for a simpler histogram
-                    if len(ct_image.shape) == 3:
-                        ct_image = cv2.cvtColor(ct_image, cv2.COLOR_RGB2GRAY)
-                    
-                    # Flatten the array and remove pure black pixels (often background)
-                    flat_pixels = ct_image.flatten()
-                    flat_pixels = flat_pixels[flat_pixels > 0]
-                    
-                    fig_hist = px.histogram(
-                        x=flat_pixels, 
-                        nbins=50,
-                        labels={'x': 'Pixel Intensity', 'y': 'Count'},
-                        color_discrete_sequence=['#60a5fa']
+                with top_col2:
+                    st.markdown(
+                        """
+                        <div class="glass-card" style="height: 100%;">
+                            <h3 style="color: #34d399; margin-top:0;">📊 Metabolic Metrics</h3>
+                        """, 
+                        unsafe_allow_html=True
                     )
+                    metrics = result["metrics"]
+                    for k, v in metrics.items():
+                        st.metric(k, f"{v:.2f}")
+                    st.markdown("</div>", unsafe_allow_html=True)
                     
-                    fig_hist.update_layout(
-                        template='plotly_dark',
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        margin=dict(l=20, r=20, t=20, b=20)
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # ================= GEMINI AI ORGAN IDENTIFICATION =================
+                st.markdown('<div class="section-header">🤖 AI Organ Identification</div>', unsafe_allow_html=True)
+                with st.spinner("Analyzing anatomical features..."):
+                    try:
+                        # Convert the CT slice to a PIL Image for the VLM
+                        ct_img_array = result["images"]["CT Slice (Anatomical)"]
+                        # If it's a grayscale image, convert to RGB for PIL
+                        if len(ct_img_array.shape) == 2:
+                            ct_img_array = cv2.cvtColor(ct_img_array, cv2.COLOR_GRAY2RGB)
+                        pil_ct_img = Image.fromarray(ct_img_array)
+
+                        # Initialize the model and generate content
+                        vlm_model = genai.GenerativeModel('gemini-2.5-flash')
+                        prompt = (
+                            "You are an expert radiologist. Analyze this medical CT slice from a PET/CT scan. "
+                            "Identify the anatomical region (e.g., chest, abdomen, pelvis), describe the organ details visible, "
+                            "and point out any general characteristics. Keep your response professional, concise, and structured."
+                        )
+                        response = vlm_model.generate_content([prompt, pil_ct_img])
+                        
+                        st.markdown(
+                            f"""
+                            <div class="glass-card" style="border-left: 4px solid #a855f7;">
+                                <h4 style="color: #a855f7; margin-top:0;">AI Analysis</h4>
+                                <p style="color: #e2e8f0; line-height: 1.6; font-size: 1.1rem;">
+                                    {response.text}
+                                </p>
+                            </div>
+                            """, 
+                            unsafe_allow_html=True
+                        )
+                    except Exception as e:
+                        st.error(f"AI Analysis Failed: {str(e)}")
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown('<div class="section-header">Visual Interpretation</div>', unsafe_allow_html=True)
+                
+                # Images Row
+                c1, c2, c3 = st.columns(3)
+
+                with c1:
+                    st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                    st.image(
+                        result["images"]["CT Slice (Anatomical)"],
+                        caption="CT Slice (Anatomical)",
+                        use_container_width=True
                     )
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                with c2:
+                    st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                    st.image(
+                        result["images"]["PET Slice (Metabolic)"],
+                        caption="PET Slice (Metabolic)",
+                        use_container_width=True
+                    )
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                with c3:
+                    st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                    st.image(
+                        result["images"]["PET + CT Fusion"],
+                        caption="PET + CT Fusion",
+                        use_container_width=True
+                    )
+                    st.markdown('</div>', unsafe_allow_html=True)
                     
-                    st.plotly_chart(fig_hist, use_container_width=True, config={'displayModeBar': False})
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Dynamic Active Region Marker
+                active_pct = metrics.get("Active region (%)", 0)
+                
+                # Map actual percentage to visual position (simplified mapping):
+                # 0-5% is Low (0-33%)
+                # 5-15% is Moderate (33-66%)
+                # >15% is High (66-100%)
+                if active_pct <= 5:
+                    left_pos = (active_pct / 5.0) * 33.3
+                elif active_pct <= 15:
+                    left_pos = 33.3 + ((active_pct - 5) / 10.0) * 33.3
+                else:
+                    left_pos = 66.6 + min(((active_pct - 15) / 20.0) * 33.3, 33.3) # cap at 100%
+                
+                left_pos = max(2, min(left_pos, 98)) # keep marker inside bounds
+                
+                marker_html = f"""<div style="position: absolute; left: {left_pos}%; top: -25px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; z-index: 10;">
+<div style="background: rgba(0,0,0,0.8); color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; white-space: nowrap; margin-bottom: 2px; border: 1px solid rgba(255,255,255,0.3);">
+{active_pct:.1f}% Area
+</div>
+<div style="width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid white;"></div>
+</div>"""
+
+                # Doctor interpretation explanation
+                st.markdown(
+                    "<div class='glass-card'>"
+                    "<h4 style='color: #fbbf24; margin-top:0;'>👨‍⚕️ Interpretation Guide</h4>"
+                    "<div style='display: flex; gap: 20px; color: #cbd5e1; margin-bottom: 20px;'>"
+                    "<div style='flex: 1;'><strong>• PET:</strong> Highlights metabolic activity (FDG uptake)</div>"
+                    "<div style='flex: 1;'><strong>• CT:</strong> Shows physical anatomical structure</div>"
+                    "<div style='flex: 1;'><strong>• Fusion:</strong> Correlates hotspots with anatomy</div>"
+                    "<div style='flex: 1;'><strong>• Stage:</strong> Inferred from uptake intensity & spread</div>"
+                    "</div>"
+                    "<div style='margin-top: 25px; margin-bottom: 20px; padding: 20px; background: rgba(15, 23, 42, 0.4); border-radius: 12px; border: 1px solid rgba(52, 211, 153, 0.2);'>"
+                    "<div style='margin-bottom: 30px; text-align: center;'>"
+                    "<span style='color: #34d399; font-size: 1.3rem; font-weight: bold;'>🎨 PET & Fusion Disease Area Indicator</span>"
+                    "</div>"
+                    "<div style='position: relative; margin-bottom: 15px; margin-top: 25px;'>"
+                    f"{marker_html}"
+                    "<div style='height: 24px; border-radius: 12px; background: linear-gradient(to right, #000080, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000, #800000); box-shadow: inset 0 2px 4px rgba(0,0,0,0.3), 0 2px 8px rgba(0,0,0,0.2);'></div>"
+                    "</div>"
+                    "<div style='display: flex; justify-content: space-between; font-size: 1rem; font-weight: 500; font-family: monospace;'>"
+                    "<div style='text-align: left; width: 33%;'>"
+                    "<span style='color: #93c5fd; font-size: 1.0rem;'>Low / Normal</span><br>"
+                    "<span style='font-size: 0.85rem; color: #94a3b8;'>(Dark & Light Blue)</span>"
+                    "</div>"
+                    "<div style='text-align: center; width: 33%;'>"
+                    "<span style='color: #fef08a; font-size: 1.0rem;'>Moderate</span><br>"
+                    "<span style='font-size: 0.85rem; color: #94a3b8;'>(Green & Yellow)</span>"
+                    "</div>"
+                    "<div style='text-align: right; width: 33%;'>"
+                    "<span style='color: #fca5a5; font-size: 1.0rem;'>High / Suspicious</span><br>"
+                    "<span style='font-size: 0.85rem; color: #94a3b8;'>(Red & Dark Red)</span>"
+                    "</div>"
+                    "</div>"
+                    "</div>"
+                    "</div>", 
+                    unsafe_allow_html=True
+                )
 
                 st.stop()
 
@@ -1280,13 +1311,42 @@ if (scan_type == "Ultrasound" and uploaded is not None) or \
                 st.stop()
 
 
-    # ========= PREDICTION RESULTS (FOR ULTRASOUND) =========
-    if scan_type == "Ultrasound":
+        # ---------- PATIENT DATA UPLOADING PURPOSE ----------
+        elif scan_type == "Patient Data":
+            from patient_data.patient_data_module import predict_patient_data
+            us_pil_img = Image.open(uploaded_us).convert("RGB")
+            histo_pil_img = Image.open(uploaded_histo).convert("RGB")
+            model = load_model()
+            
+            patient_results = predict_patient_data(
+                us_pil_img, 
+                histo_pil_img, 
+                model, 
+                get_gradcam_overlay, 
+                CLASS_NAMES
+            )
+            
+            # Extract combined results to be used in the common UI below
+            pred_name = patient_results["combined"]["prediction"]
+            confidence = patient_results["combined"]["confidence"]
+            probs = patient_results["combined"]["probabilities"]
+            
+            us_pred_name = patient_results["ultrasound"]["prediction"]
+            us_confidence = patient_results["ultrasound"]["confidence"]
+            us_overlay_np = patient_results["ultrasound"]["overlay"]
+            
+            histo_pred_name = patient_results["histopathology"]["prediction"]
+            histo_confidence = patient_results["histopathology"]["confidence"]
+
+    # ========= PREDICTION RESULTS =========
+    if scan_type in ["Ultrasound", "Histopathology", "Patient Data"]:
         st.markdown('<div class="section-header">📈 Analysis Results</div>', unsafe_allow_html=True)
         
         # Prediction card with enhanced visuals
         pred_index = CLASS_NAMES.index(pred_name)
-        confidence = probs[pred_index] * 100.0
+        if scan_type == "Ultrasound":
+            confidence = probs[pred_index] * 100.0
+        # For Histopathology and Patient Data Uploading Purpose, confidence is already percentage
         
         # Risk score calculation
         if pred_name == "malignant":
@@ -1306,12 +1366,12 @@ if (scan_type == "Ultrasound" and uploaded is not None) or \
                         <div style="font-size: 2.2rem; font-weight: 800; margin-bottom: 15px;">
                             Prediction
                         </div>
-                        <div class="status-badge {pred_name}" style="font-size: 1.5rem; padding: 12px 30px; letter-spacing: 1px;">
+                        <div class="status-badge {pred_name}" style="font-size: 3.5rem; padding: 12px 30px; letter-spacing: 1px;">
                             {pred_name.upper()}
                         </div>
                     </div>
                     <div>
-                        <div style="font-size: 4.5rem; font-weight: 900; color: #60a5fa; margin: 15px 0;">
+                        <div style="font-size: 2.0rem; font-weight: 900; color: #60a5fa; margin: 15px 0;">
                             {confidence:.1f}%
                         </div>
                         <div style="color: #cbd5e1; font-size: 1.2rem; font-weight: 500;">
@@ -1354,8 +1414,26 @@ if (scan_type == "Ultrasound" and uploaded is not None) or \
         # ========= VISUAL EXPLANATIONS =========
         st.markdown('<div class="section-header">🔍 Visual Explanations</div>', unsafe_allow_html=True)
         
+        if scan_type == "Patient Data":
+            st.markdown("### Combined Modality Analysis")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"#### Ultrasound: {us_pred_name.upper()} ({us_confidence:.1f}%)")
+                st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                st.image(us_pil_img, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.caption("Original Ultrasound Image")
+                
+            with col2:
+                st.markdown(f"#### Histopathology: {histo_pred_name.upper()} ({histo_confidence:.1f}%)")
+                st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                st.image(histo_pil_img, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.caption("Original Histopathology Image")
+                
         # Tabs for different views (conditionally hide heatmap if normal)
-        if pred_name == "normal":
+        elif pred_name == "normal" or scan_type == "Histopathology":
             # Only show original image
             #st.info("💡 Grad-CAM Heatmap visualization is not shown for Normal predictions as there are no specific lesion heat signatures to flag.")
             col1, col2, col3 = st.columns([1, 2, 1])
@@ -1363,7 +1441,7 @@ if (scan_type == "Ultrasound" and uploaded is not None) or \
                 st.markdown('<div class="image-container">', unsafe_allow_html=True)
                 st.image(pil_img, use_container_width=True)
                 st.markdown('</div>', unsafe_allow_html=True)
-                st.caption("Original Ultrasound Image")
+                st.caption(f"Original {scan_type} Image")
         else:
             tab1, tab3 = st.tabs(["🖼️ Original", "🔥 Grad-CAM Heatmap"])
             
@@ -1373,7 +1451,7 @@ if (scan_type == "Ultrasound" and uploaded is not None) or \
                     st.markdown('<div class="image-container">', unsafe_allow_html=True)
                     st.image(pil_img, use_container_width=True)
                     st.markdown('</div>', unsafe_allow_html=True)
-                    st.caption("Original Ultrasound Image")
+                    st.caption(f"Original {scan_type} Image")
             
             with tab3:
                 col1, col2, col3 = st.columns([1, 2, 1])
@@ -1384,123 +1462,199 @@ if (scan_type == "Ultrasound" and uploaded is not None) or \
                     st.caption("Grad-CAM Heatmap - Areas of model attention")
 
         # ================= PATIENT REPORT =================
-        if "patient_id" not in st.session_state:
-            st.session_state.patient_id = f"PID-{uuid.uuid4().hex[:8].upper()}"
+        if scan_type == "Patient Data":
+            if "patient_id" not in st.session_state:
+                st.session_state.patient_id = f"PID-{uuid.uuid4().hex[:8].upper()}"
 
-        st.markdown('<div class="section-header">🧾 Patient Report</div>', unsafe_allow_html=True)
-        st.markdown("### 👤 Patient Information")
+            st.markdown('<div class="section-header">🧾 Patient Report</div>', unsafe_allow_html=True)
+            st.markdown("### 👤 Patient Information")
 
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            patient_name = st.text_input("Patient Name", "")
-
-        with col2:
-            patient_id = st.text_input(
-                "Patient ID",
-                value=st.session_state.patient_id,
-                disabled=True
+            st.markdown(
+                """
+                <style>
+                /* Text input fields and number inputs */
+                div[data-baseweb="input"] > input,
+                div[data-baseweb="base-input"] > input {
+                    color: #000000 !important;
+                    background-color: #ffffff !important;
+                    border-radius: 4px !important;
+                }
+                
+                /* Placeholder text color */
+                input::placeholder {
+                    color: #94a3b8 !important;
+                }
+                
+                /* Disabled input text color */
+                input:disabled {
+                    color: #94a3b8 !important;
+                    -webkit-text-fill-color: #94a3b8 !important;
+                }
+                
+                /* Labels for Text input fields */
+                label[data-testid="stWidgetLabel"] > div > p {
+                    color: #34d399 !important;
+                    font-weight: 600 !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True
             )
 
-        with col3:
-            patient_age = st.number_input(
-                "Age",
-                min_value=1,
-                max_value=120,
-                value=30,
-                step=1
-            )
-        
-        # Determine cancer stage based on prediction and confidence
-        if pred_name == "normal":
-            stage = "No Cancer Detected"
-        elif pred_name == "benign":
-            stage = "Benign Tumor (Non-cancerous)"
-        else:
-            if confidence > 90:
-                stage = "Stage III – Advanced Malignant"
-            elif confidence > 75:
-                stage = "Stage II – Moderate Malignant"
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                patient_name = st.text_input("Patient Name", placeholder="Enter patient name")
+
+            with col2:
+                patient_id = st.text_input(
+                    "Patient ID",
+                    value=st.session_state.patient_id,
+                    disabled=True
+                )
+
+            with col3:
+                patient_age = st.number_input(
+                    "Age",
+                    min_value=1,
+                    max_value=120,
+                    value=30,
+                    step=1
+                )
+            
+            # Determine cancer stage based on prediction and confidence
+            if pred_name == "normal":
+                stage = "No Cancer Detected"
+            elif pred_name == "benign":
+                stage = "Benign Tumor (Non-cancerous)"
             else:
-                stage = "Stage I – Early Malignant"
+                if confidence > 90:
+                    stage = "Stage III – Advanced Malignant"
+                elif confidence > 75:
+                    stage = "Stage II – Moderate Malignant"
+                else:
+                    stage = "Stage I – Early Malignant"
 
-        st.success(f"Predicted Cancer Stage: **{stage}**")
-        
-        if not patient_name.strip():
-            st.warning("⚠️ Please enter the patient name before saving the record.")
-        else:
-            # Save patient history
-            save_patient_history(
+            st.success(f"Predicted Cancer Stage: **{stage}**")
+            
+            if not patient_name.strip():
+                st.warning("⚠️ Please enter the patient name before saving the record.")
+            else:
+                # Save patient history
+                save_patient_history(
+                    patient_name,
+                    patient_id,
+                    pred_name.upper(),
+                    confidence,
+                    stage,
+                    risk_score
+                )
+                
+                st.success("✅ Patient record saved successfully!")
+
+            st.markdown("---")
+            st.markdown("📝 Doctor's Notes")
+            
+            # Initialize session state for notes if it doesn't exist
+            if "doctor_notes_text" not in st.session_state:
+                st.session_state.doctor_notes_text = ""
+                
+            def save_notes():
+                st.session_state.doctor_notes_text = st.session_state.doctor_notes_input
+                
+            def clear_notes():
+                st.session_state.doctor_notes_text = ""
+                st.session_state.doctor_notes_input = ""
+                
+            # We use a form to hold the text area and the save button
+            with st.form(key="doctor_notes_form"):
+                st.text_area(
+                    "", 
+                    value=st.session_state.doctor_notes_text,
+                    height=150, 
+                    key="doctor_notes_input",
+                    placeholder="Write any specific notes, observations, or follow-up recommendations for the patient here. These will be included in the downloaded PDF report."
+                )
+                
+                col_btn1, col_btn2 = st.columns([1, 1])
+                with col_btn1:
+                    save_clicked = st.form_submit_button("Save", on_click=save_notes, type="primary", use_container_width=True)
+                with col_btn2:
+                    clear_clicked = st.form_submit_button("Clear", on_click=clear_notes, type="primary", use_container_width=True)
+                    
+                if save_clicked:
+                    st.success("Notes saved for the report!")
+
+            # The report generation will use whatever is saved in the session state
+            saved_notes = st.session_state.doctor_notes_text
+
+            # Generate and display download button for report
+            # Using us_pred_name, us_confidence, histo_pred_name, histo_confidence
+            # Note: These variables will only be correctly defined if scan_type == "Patient Data" 
+            # due to code block inside `if scan_type == "Patient Data":` above
+            report_buffer = generate_patient_report(
                 patient_name,
                 patient_id,
-                pred_name.upper(),
+                patient_age,
+                pred_name,
                 confidence,
                 stage,
-                risk_score
+                probs,
+                us_pred=us_pred_name,
+                us_conf=us_confidence,
+                histo_pred=histo_pred_name,
+                histo_conf=histo_confidence,
+                doctor_notes=saved_notes
+            )
+
+            st.download_button(
+                label="⬇️ Download Patient Report (PDF)",
+                data=report_buffer,
+                file_name=f"{patient_name.replace(' ', '_')}_Report.pdf" if patient_name.strip() else "Breast_Cancer_Report.pdf",
+                mime="application/pdf"
             )
             
-            st.success("✅ Patient record saved successfully!")
+            # ========= DETAILED METRICS =========
+            st.markdown('<div class="section-header">📋 Detailed Metrics</div>', unsafe_allow_html=True)
+            
+            cols = st.columns(3)
+            
+            with cols[0]:
+                st.markdown(
+                    """
+                    <div class="glass-card" style="text-align: center;">
+                        <div style="font-size: 2rem; color: #60a5fa;">🔄</div>
+                        <div style="font-size: 1.2rem; font-weight: 600; margin: 10px 0;">Model Architecture</div>
+                        <div style="color: #cbd5e1;">ResNet18 with Transfer Learning</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            
+            with cols[1]:
+                st.markdown(
+                    """
+                    <div class="glass-card" style="text-align: center;">
+                        <div style="font-size: 2rem; color: #34d399;">🎯</div>
+                        <div style="font-size: 1.2rem; font-weight: 600; margin: 10px 0;">Explainability</div>
+                        <div style="color: #cbd5e1;">Grad-CAM Visualization</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            
+            with cols[2]:
+                st.markdown(
+                    """
+                    <div class="glass-card" style="text-align: center;">
+                        <div style="font-size: 2rem; color: #fbbf24;">📊</div>
+                        <div style="font-size: 1.2rem; font-weight: 600; margin: 10px 0;">Confidence Scores</div>
+                        <div style="color: #cbd5e1;">Real-time Probability Distribution</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-        # Generate and display download button for report
-        report_buffer = generate_patient_report(
-            patient_name,
-            patient_id,
-            patient_age,
-            pred_name,
-            confidence,
-            stage,
-            probs
-        )
-
-        st.download_button(
-            label="⬇️ Download Patient Report (PDF)",
-            data=report_buffer,
-            file_name="Breast_Cancer_Report.pdf",
-            mime="application/pdf"
-        )
-        
-        # ========= DETAILED METRICS =========
-        st.markdown('<div class="section-header">📋 Detailed Metrics</div>', unsafe_allow_html=True)
-        
-        cols = st.columns(3)
-        
-        with cols[0]:
-            st.markdown(
-                """
-                <div class="glass-card" style="text-align: center;">
-                    <div style="font-size: 2rem; color: #60a5fa;">🔄</div>
-                    <div style="font-size: 1.2rem; font-weight: 600; margin: 10px 0;">Model Architecture</div>
-                    <div style="color: #cbd5e1;">ResNet18 with Transfer Learning</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        
-        with cols[1]:
-            st.markdown(
-                """
-                <div class="glass-card" style="text-align: center;">
-                    <div style="font-size: 2rem; color: #34d399;">🎯</div>
-                    <div style="font-size: 1.2rem; font-weight: 600; margin: 10px 0;">Explainability</div>
-                    <div style="color: #cbd5e1;">Grad-CAM Visualization</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        
-        with cols[2]:
-            st.markdown(
-                """
-                <div class="glass-card" style="text-align: center;">
-                    <div style="font-size: 2rem; color: #fbbf24;">📊</div>
-                    <div style="font-size: 1.2rem; font-weight: 600; margin: 10px 0;">Confidence Scores</div>
-                    <div style="color: #cbd5e1;">Real-time Probability Distribution</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-    
-        
 else:
     # Landing page when no image uploaded
     st.markdown('<div class="section-header">🚀 Get Started</div>', unsafe_allow_html=True)
