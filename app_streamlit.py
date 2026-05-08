@@ -14,7 +14,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import google.generativeai as genai
-genai.configure(api_key="AIzaSyDnH-3Z6-_9kVrQZ6caAcXp-4oxBcgHEHM")
+genai.configure(api_key="")
 from streamlit_lottie import st_lottie
 import json
 import time
