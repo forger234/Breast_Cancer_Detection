@@ -232,9 +232,8 @@ http://localhost:8501
 
 ## PET/CT Visualization
 
-* CT Slice
-* PET Metabolic Slice
-* PET + CT Fusion
+<img width="1714" height="670" alt="Screenshot 2026-03-23 160634" src="https://github.com/user-attachments/assets/81b29f44-ef61-4067-a0af-f40b6f31faf5" />
+
 
 ## Patient Report
 
@@ -246,13 +245,8 @@ http://localhost:8501
 
 # Explainable AI
 
-This project integrates **Grad-CAM** to provide:
+<img width="1598" height="1200" alt="WhatsApp Image 2026-05-09 at 11 16 30 PM" src="https://github.com/user-attachments/assets/68b365c7-d2a0-40b4-a016-51f5a5333f48" />
 
-* Visual heatmaps
-* Model attention regions
-* Improved medical interpretability
-
----
 
 # Security Features
 <img width="1565" height="835" alt="image" src="https://github.com/user-attachments/assets/29e8d727-cbc4-4d25-b8e7-4971c8dea003" />
