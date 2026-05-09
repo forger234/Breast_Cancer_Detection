@@ -283,12 +283,6 @@ It should NOT replace professional medical diagnosis.
 
 ---
 
-# Author
-
-## Developed By
-
-Your Name
-
 ## Project Type
 
 Final Year Project / Research Project
