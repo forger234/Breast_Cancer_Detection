@@ -165,6 +165,8 @@ Alternative Dataset:
 ## Histopathology Model
 
 * CNN-based classification model
+* EfficientNetB0
+* ImageNet
 
 ## PET/CT Model
 
