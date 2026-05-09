@@ -232,22 +232,10 @@ Deploy directly using:
 
 [Streamlit Cloud](https://streamlit.io/cloud?utm_source=chatgpt.com)
 
-### Deployment Steps
-
-1. Push project to GitHub
-2. Open Streamlit Cloud
-3. Connect GitHub repository
-4. Select:
-
-   * Branch: `main`
-   * File: `app_streamlit.py`
-5. Deploy
-
----
-
 # Screenshots
 
 ## Ultrasound Prediction
+<img width="1565" height="835" alt="image" src="https://github.com/user-attachments/assets/4da99adb-7225-40c5-ab19-7ddf42b8febb" />
 
 * Upload ultrasound scan
 * View AI prediction
@@ -279,11 +267,8 @@ This project integrates **Grad-CAM** to provide:
 
 # Security Features
 
-* Doctor login authentication
-* Session management
-* Secure patient report generation
+![Uploading image.png…]()
 
----
 
 # Future Improvements
 
