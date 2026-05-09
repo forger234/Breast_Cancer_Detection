@@ -202,8 +202,8 @@ def add_bg_image():
     # Try to load local bact.jpg, fallback to online image if not found
     try:
         # Check if local file exists
-        if os.path.exists("bact.jpg"):
-            bg_image = f"data:image/jpg;base64,{get_base64_of_bin_file('bact.jpg')}"
+        if os.path.exists("/bact.jpg"):
+            bg_image = f"data:image/jpg;base64,{get_base64_of_bin_file('/bact.jpg')}"
         else:
             # Fallback to online image
             bg_image = "https://images.unsplash.com/photo-1559757148-5c350d0d3c56?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80"
