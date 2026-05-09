@@ -224,22 +224,11 @@ http://localhost:8501
 
 ---
 
-# Deployment
-
-## Streamlit Cloud Deployment
-
-Deploy directly using:
-
-[Streamlit Cloud](https://streamlit.io/cloud?utm_source=chatgpt.com)
-
 # Screenshots
 
 ## Ultrasound Prediction
-<img width="1565" height="835" alt="image" src="https://github.com/user-attachments/assets/4da99adb-7225-40c5-ab19-7ddf42b8febb" />
+<img width="1912" height="960" alt="image" src="https://github.com/user-attachments/assets/e9e82a8b-569a-4cf7-8948-f6c506a1e0c5" />
 
-* Upload ultrasound scan
-* View AI prediction
-* Grad-CAM heatmap visualization
 
 ## PET/CT Visualization
 
@@ -266,8 +255,8 @@ This project integrates **Grad-CAM** to provide:
 ---
 
 # Security Features
+<img width="1565" height="835" alt="image" src="https://github.com/user-attachments/assets/29e8d727-cbc4-4d25-b8e7-4971c8dea003" />
 
-![Uploading image.png…]()
 
 
 # Future Improvements
