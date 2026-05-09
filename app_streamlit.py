@@ -1101,7 +1101,7 @@ if (scan_type in ["Ultrasound", "Histopathology"] and uploaded is not None) or \
    (scan_type == "PET / CT" and uploaded_files) or \
    (scan_type == "Patient Data" and uploaded_folder_files and len(uploaded_folder_files) >= 2):
 
-    with st.spinner("🔄 Processing scan..."):
+    with st.spinner("  Processing scan..."):
 
         # ---------- ULTRASOUND ----------
         if scan_type == "Ultrasound":
