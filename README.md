@@ -236,12 +236,8 @@ http://localhost:8501
 
 
 ## Patient Report
+<img width="1835" height="952" alt="image" src="https://github.com/user-attachments/assets/890cccb6-f073-47af-b611-1e4d40391bcf" />
 
-* PDF report generation
-* Clinical interpretation
-* Doctor notes
-
----
 
 # Explainable AI
 
